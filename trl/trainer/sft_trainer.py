@@ -891,17 +891,17 @@ class SFTTrainer(BaseTrainer):
                 )
             compute_loss_func = dft_loss
         elif args.loss_type == "eaft":
-                if compute_loss_func is not None:
-                    raise ValueError(
-                        "You passed a `compute_loss_func` together with `loss_type='eaft'` to the `SFTTrainer`. "
-                        "When using `loss_type='eaft'`, the loss function is internally set to the EAFT loss, so "
-                        "passing a `compute_loss_func` is not allowed."
-                    )
-                compute_loss_func = lambda outputs, labels, num_items_in_batch=None: eaft_loss_func(
-                    outputs, labels, num_items_in_batch, args.eaft_alpha
+            if compute_loss_func is not None:
+                raise ValueError(
+                    "You passed a `compute_loss_func` together with `loss_type='eaft'` to the `SFTTrainer`. "
+                    "When using `loss_type='eaft'`, the loss function is internally set to the EAFT loss, so "
+                    "passing a `compute_loss_func` is not allowed."
                 )
-            else:
-                raise ValueError(f"Invalid `loss_type` {args.loss_type} passed. Supported values are 'nll', 'dft' and 'eaft'.")
+            compute_loss_func = lambda outputs, labels, num_items_in_batch=None: eaft_loss_func(
+                outputs, labels, num_items_in_batch, args.eaft_alpha
+            )
+        else:
+            raise ValueError(f"Invalid `loss_type` {args.loss_type} passed. Supported values are 'nll', 'dft' and 'eaft'.")
 
         # Initialize the metrics
         self._metrics = {"train": defaultdict(list), "eval": defaultdict(list)}
