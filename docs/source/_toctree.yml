@@ -121,6 +121,8 @@
     title: IW-OPD
   - local: merge_model_callback
     title: MergeModelCallback
+  - local: nblora
+    title: NB-LoRA
   - local: online_dpo_trainer
     title: Online DPO
   - local: orpo_trainer

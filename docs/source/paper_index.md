@@ -1454,6 +1454,24 @@ from peft import LoraConfig
 config = LoraConfig(use_dora=True, ...)
 ```
 
+### NB-LoRA: Null-Basis LoRA for Reasoning-Preserving Fine-Tuning
+
+**📜 Paper**: https://huggingface.co/papers/2609.25618
+
+Null-Basis LoRA (NB-LoRA) fine-tunes post-RL models without collapsing their reasoning: for each target `nn.Linear`, input hidden states from reasoning rollouts form a Gram matrix whose tail eigenvectors (outside the top spectral energy) become a frozen orthonormal null basis, and only two small factors are trained with the update constrained to that null space. To use NB-LoRA, use the [`experimental.nblora.NBLoraTrainer`]:
+
+```python
+from trl.experimental.nblora import NBLoraConfig, NBLoraTrainer
+
+training_args = NBLoraConfig(
+    nblora_target_modules=["q_proj", "k_proj", "v_proj", "up_proj", "down_proj"],  # paper, Table 8
+    nblora_anchor_dataset="gsm8k",  # reasoning prompts; paper anchor corpora are MATH-lighteval and GSM8K
+    nblora_rank=16,  # paper, Table 8
+    nblora_alpha=32,  # paper, Table 8; applied as alpha/rank per LoRA convention
+)
+trainer = NBLoraTrainer(model=..., args=training_args, train_dataset=...)
+```
+
 ## Reinforce Leave-One-Out
 
 Papers relating to the [`RLOOTrainer`]
