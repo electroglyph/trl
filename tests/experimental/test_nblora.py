@@ -361,6 +361,16 @@ class TestNBLoraMerge(TrlTestCase):
         after = self._eval_logits(trainer, texts)
         torch.testing.assert_close(after, before)
 
+    def test_merge_fp64_matches_adapter_forward(self):
+        # High-precision merge path (disabled by default): same merge, computed in float64.
+        trainer = _make_trainer(self.tmp_dir)
+        texts = _sft_texts(2)
+        before = self._eval_logits(trainer, texts)
+        trainer.merge_and_unload(dtype=torch.float64)
+        assert not any("nblora_" in key for key in trainer.model.state_dict())
+        after = self._eval_logits(trainer, texts)
+        torch.testing.assert_close(after, before)
+
     def test_merge_then_save_and_reload(self):
         trainer = _make_trainer(self.tmp_dir)
         before = self._eval_logits(trainer, _sft_texts(2))

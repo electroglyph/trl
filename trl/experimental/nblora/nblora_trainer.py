@@ -21,6 +21,7 @@ import torch
 import torch.nn.functional as F
 from datasets import Dataset, load_dataset, load_from_disk
 from torch import nn
+from tqdm import tqdm
 from transformers import (
     DataCollator,
     PreTrainedModel,
@@ -34,7 +35,7 @@ from ...trainer.utils import get_config_model_id
 from .nblora_config import NBLoraConfig
 
 
-def merge_nblora_weight(weight, nblora_B, nblora_C, nblora_null, scaling):
+def merge_nblora_weight(weight, nblora_B, nblora_C, nblora_null, scaling, dtype=None):
     """
     Merge an NB-LoRA adapter into its backbone weight.
 
@@ -49,12 +50,24 @@ def merge_nblora_weight(weight, nblora_B, nblora_C, nblora_null, scaling):
             Frozen null basis `Ns` of shape `(n, k)`.
         scaling (`float`):
             Adapter scaling factor (`alpha / rank`).
+        dtype (`torch.dtype`, *optional*):
+            Compute the merge in this dtype (e.g. `torch.float64` for a
+            high-precision merge) before casting back to the dtype of `weight`.
+            Defaults to the dtype of `nblora_B`.
 
     Returns:
         `torch.Tensor`: `W + scaling * B C Ns^T`, in the dtype of `weight`.
     """
-    delta = scaling * (nblora_B @ nblora_C @ nblora_null.to(device=nblora_B.device, dtype=nblora_B.dtype).t())
-    return weight + delta.to(device=weight.device, dtype=weight.dtype)
+    compute_dtype = nblora_B.dtype if dtype is None else dtype
+    device = nblora_B.device
+    delta = scaling * (
+        nblora_B.to(device=device, dtype=compute_dtype)
+        @ nblora_C.to(device=device, dtype=compute_dtype)
+        @ nblora_null.to(device=device, dtype=compute_dtype).t()
+    )
+    return (weight.to(device=device, dtype=compute_dtype) + delta).to(
+        device=weight.device, dtype=weight.dtype
+    )
 
 
 class NBLoraLinear(nn.Module):
@@ -90,14 +103,21 @@ class NBLoraLinear(nn.Module):
         adapter = (h @ self.nblora_C.t()) @ self.nblora_B.t()
         return base + self.scaling * adapter
 
-    def merged_weight(self) -> torch.Tensor:
+    def merged_weight(self, dtype=None) -> torch.Tensor:
         """
         Return the backbone weight with the adapter merged in.
+
+        Args:
+            dtype (`torch.dtype`, *optional*):
+                Compute the merge in this dtype (e.g. `torch.float64`) before
+                casting back to the backbone dtype. Defaults to the adapter dtype.
 
         Returns:
             `torch.Tensor`: `W + (alpha/r) B C Ns^T`, in the backbone dtype.
         """
-        return merge_nblora_weight(self.weight, self.nblora_B, self.nblora_C, self.nblora_null, self.scaling)
+        return merge_nblora_weight(
+            self.weight, self.nblora_B, self.nblora_C, self.nblora_null, self.scaling, dtype=dtype
+        )
 
 
 def _collect_gram_matrices(model, tokenizer, target_names, texts, max_length):
@@ -162,7 +182,7 @@ def _collect_gram_matrices(model, tokenizer, target_names, texts, max_length):
         try:
             with torch.no_grad():
                 device = next(model.parameters()).device
-                for text in texts:
+                for text in tqdm(texts, desc="Collecting Gram matrices", unit="prompt", disable=False):
                     batch = tokenizer(text, truncation=True, max_length=max_length, return_tensors="pt")
                     model(input_ids=batch["input_ids"].to(device))
         finally:
@@ -188,7 +208,7 @@ def _build_null_bases(grams, energy_threshold):
         n` (or empty Gram) are skipped with a warning and keep their plain linear layer.
     """
     null_bases = {}
-    for site, G in grams.items():
+    for site, G in tqdm(grams.items(), desc="Building null bases", unit="site", disable=False):
         n = G.shape[0]
         eigenvalues, eigenvectors = torch.linalg.eigh(G)
         total = eigenvalues.sum().item()
@@ -586,12 +606,22 @@ class NBLoraTrainer(SFTTrainer):
             self.model.train(was_training)
         return worst
 
-    def merge_and_unload(self):
+    def merge_and_unload(self, dtype=None):
         """
         Merge every NB-LoRA adapter into its backbone weight, in place.
 
         Each [`NBLoraLinear`][trl.experimental.nblora.nblora_trainer] is replaced by a plain `nn.Linear` with weight `W
         + (alpha/r) B C Ns^T` (frozen). Call before `save_model` to persist a fully merged checkpoint.
+
+        Args:
+            dtype (`torch.dtype`, *optional*):
+                Compute each merge in this dtype (e.g. `torch.float64` for a
+                high-precision merge) before casting back to the backbone dtype.
+                Disabled by default (`None` merges in the adapter dtype). A
+                high-precision merge shrinks floating-point drift versus the
+                adapter forward but cannot remove it entirely: the merged
+                single-matmul path still rounds differently than the adapter's
+                multi-matmul path.
 
         Returns:
             [`~transformers.PreTrainedModel`]: the model with adapters merged.
@@ -601,7 +631,7 @@ class NBLoraTrainer(SFTTrainer):
             if not isinstance(module, NBLoraLinear):
                 continue
             merged = nn.Linear(module.in_features, module.out_features, bias=module.bias is not None)
-            merged.weight = nn.Parameter(module.merged_weight(), requires_grad=False)
+            merged.weight = nn.Parameter(module.merged_weight(dtype=dtype), requires_grad=False)
             if module.bias is not None:
                 merged.bias = module.bias
                 merged.bias.requires_grad_(False)
